@@ -1,0 +1,185 @@
+init_by_lua_block { require "cjson" }
+
+server {
+    listen          80 default_server;
+
+    resolver        8.8.8.8 8.8.4.4;
+    root            /dev/null;
+    index           index.html;
+    server_name     _;
+
+    #set $GA_TOKEN   "grafana-token"; # must be changed!
+    expires         -1;
+
+    client_max_body_size    256m;
+    client_body_buffer_size 128k;
+
+    location /grafana {
+        internal;
+        set $VAULT_URI           "https://vault.example.org/v1/auth/userpass/login/$username";
+        proxy_cache              off;
+        proxy_redirect           off;
+        proxy_http_version       1.1;
+        proxy_set_header         Cookie "";
+        proxy_pass               $VAULT_URI;
+
+        access_log               /var/log/nginx/grafana-login_access.log combined;
+        error_log                /var/log/nginx/grafana-login_error.log;
+    }
+
+    location /login {
+        set $username "";
+
+        access_by_lua_block {
+            ngx.req.read_body()
+            local data = ngx.req.get_body_data()
+             if not data then
+                 ngx.status = ngx.HTTP_BAD_REQUEST
+                 ngx.say("failed to get body data")
+                 ngx.exit(ngx.HTTP_OK)
+             end
+
+             local jdata = require "cjson".decode(data)
+
+             if type(jdata) ~= "table" then
+                 ngx.status = ngx.HTTP_BAD_REQUEST
+                 ngx.say("failed to json decode")
+                 ngx.exit(ngx.HTTP_OK)
+             end
+
+             local xdict    = {}
+             local username = ""
+
+             for key, val in pairs(jdata) do
+                 if key == "user" then
+                     username = tostring(val)
+                 elseif key == "password" then
+                     xdict["password"] = tostring(val)
+                 end
+             end
+
+             if not username or not xdict["password"] then
+                 ngx.status = ngx.HTTP_BAD_REQUEST
+                 ngx.say("invalid username or password")
+                 ngx.exit(ngx.HTTP_OK)
+             end
+
+             local tres = ngx.location.capture("/grafana",
+                              { method = ngx.HTTP_POST,
+                                body = require "cjson".encode(xdict),
+                                vars = { username = string.gsub(username, "@", "-at-") }})
+
+             if tres.status ~= ngx.HTTP_OK then
+                 ngx.status = ngx.HTTP_UNAUTHORIZED
+                 ngx.say('{"message":"Invalid username or password"}')
+                 ngx.exit(ngx.HTTP_OK)
+             end
+
+             xdict["user"] = username
+             xdict["password"] = ngx.var.GA_TOKEN
+
+             ngx.req.set_body_data(require "cjson".encode(xdict))
+        }
+
+        proxy_cache     off;
+        proxy_pass      http://localhost:3000/login;
+
+        access_log      /var/log/nginx/grafana-login_access.log combined;
+        error_log       /var/log/nginx/grafana-login_error.log;
+    }
+
+    location /api/user/signup {
+        access_by_lua_block {
+            ngx.req.read_body()
+            local data = ngx.req.get_body_data()
+             if not data then
+                 ngx.status = ngx.HTTP_BAD_REQUEST
+                 ngx.say("failed to get body data")
+                 ngx.exit(ngx.HTTP_OK)
+             end
+
+             local jdata = require "cjson".decode(data)
+
+             if type(jdata) ~= "table" or not jdata["email"] then
+                 ngx.status = ngx.HTTP_BAD_REQUEST
+                 ngx.say("failed to json decode")
+                 ngx.exit(ngx.HTTP_OK)
+             end
+        }
+
+        proxy_cache     off;
+        proxy_pass      http://localhost:3000/api/user/signup;
+
+        access_log      /var/log/nginx/grafana-signup_access.log combined;
+        error_log       /var/log/nginx/grafana-signup_error.log;
+    }
+
+    location /api/user/signup/step2 {
+        access_by_lua_block {
+            ngx.req.read_body()
+            local data = ngx.req.get_body_data()
+             if not data then
+                 ngx.status = ngx.HTTP_BAD_REQUEST
+                 ngx.say("failed to get body data")
+                 ngx.exit(ngx.HTTP_OK)
+             end
+
+             local jdata = require "cjson".decode(data)
+
+             if type(jdata) ~= "table" then
+                 ngx.status = ngx.HTTP_BAD_REQUEST
+                 ngx.say("failed to json decode")
+                 ngx.exit(ngx.HTTP_OK)
+             end
+
+             local xdict    = {}
+             local username = ""
+
+             for key, val in pairs(jdata) do
+                 if key == "email" then
+                     username = tostring(val)
+                 elseif key == "password" then
+                     xdict["password"] = tostring(val)
+                 end
+             end
+
+             if not username or not xdict["password"] then
+                 ngx.status = ngx.HTTP_BAD_REQUEST
+                 ngx.say("invalid username or password")
+                 ngx.exit(ngx.HTTP_OK)
+             end
+
+             local tres = ngx.location.capture("/grafana",
+                              { method = ngx.HTTP_POST,
+                                body = require "cjson".encode(xdict),
+                                vars = { username = string.gsub(username, "@", "-at-") }})
+
+             if tres.status ~= ngx.HTTP_OK then
+                 ngx.status = ngx.HTTP_UNAUTHORIZED
+                 ngx.say('{"message":"Invalid username or password"}')
+                 ngx.exit(ngx.HTTP_OK)
+             end
+
+             xdict["email"]    = username
+             xdict["username"] = username
+             xdict["password"] = ngx.var.GA_TOKEN
+             xdict["name"]     = username
+
+             ngx.req.set_body_data(require "cjson".encode(xdict))
+        }
+
+        proxy_cache     off;
+        proxy_pass      http://localhost:3000/api/user/signup/step2;
+
+        access_log      /var/log/nginx/grafana-signup_access.log combined;
+        error_log       /var/log/nginx/grafana-signup_error.log;
+    }
+
+    location / {
+        proxy_cache     off;
+		proxy_pass		http://localhost:3000/;
+
+        access_log      /var/log/nginx/grafana_access.log combined;
+        error_log       /var/log/nginx/grafana_error.log;
+    }
+}
